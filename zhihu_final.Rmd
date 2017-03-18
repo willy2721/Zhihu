@@ -1,0 +1,135 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(readr)
+library(dplyr)
+library(jiebaR)
+library(tidytext)
+library(fpc)
+library(cluster)
+library(rJava)
+library(tm)
+library(SnowballC)
+library(slam)
+library(XML)
+library(RCurl)
+library(Matrix)
+library(tmcn)
+library(Rwordseg)
+library(e1071)
+library(MLmetrics)
+```
+
+```{r}
+source('./script/zhihu_utility.R')
+source('./script/zhihu_count.R')
+source('./script/zhihu_senti.R')
+source('./script/zhihu_tfidf_score.R')
+#source('~/dsR/final/script/zhihu_tf_idf.R')
+source('./script/zhihu_cluster.R')
+```
+
+
+```{r}
+# Global variables
+data <- tbl_df(read_csv("~/dsR/final/data/food.csv")) %>% na.omit()
+
+```
+
+```{r}
+# Clean entire datum
+#data <- full_clean(data)
+data <- text_filter(data)
+#data <- data[1:50, ]
+#ny(is.na(data))
+
+#Reorder the data and select a question
+data <- data[order(data$question_title),]
+data <- subset(data, data$ans_upvote_num != 0)
+qid = sample(1:length(unique(data$question_title)),1)
+data <- data[data$question_title == unique(data$question_title)[qid],]
+
+
+# Get stop words
+data$question_combined <- paste(data$question_title, data$question_detail)
+document <- c(unique(data$question_combined),unique(data$ans))
+stop_word <- get_stop_word(document)
+stop_word <- unique(c(stop_word, toTrad(stopwordsCN())))
+
+# Add response time
+data$response_time <- time_transform(data)
+
+# Add segmented questions and answers
+data$ans_seg <- sapply(data$ans, function(x) paste(filter_segment(seg_worker[x], stop_word), collapse = ' '))
+data$ans_seg_vec <- sapply(data$ans, function(x) filter_segment(seg_worker[x], stop_word))
+#data$q_seg <- sapply(data$question_combined, function(x) paste(filter_segment(seg_worker[x], stop_word), collapse = ' '))
+
+# Add number of characters, words, and percentage of stop words
+data$n_char <- char_count(data)
+data$n_word <- word_count(data)
+data$n_stop <- stop_word_count(data,stop_word)
+data$per_stop <- stop_word_percentage(data)
+
+# Add sentiment score
+data$senti_score <- senti(data)
+```
+
+```{r}
+# Add tf_idf
+ans_tfidf <- by(data, data$question_title, tf_idf_score)
+data$ans_tfidf <- unlist(ans_tfidf)
+
+# Add cluster score
+ans_cluster <- by(data, data$question_title, get_cluster_feature)
+ans_cluster <- do.call("rbind", ans_cluster)
+data$km1 <- ans_cluster$km1
+data$km2 <- ans_cluster$km2
+data$km3 <- ans_cluster$km3
+data$pc1 <- ans_cluster$pc1
+data$pc2 <- ans_cluster$pc2
+data$pc3 <- ans_cluster$pc3
+```
+
+
+```{r}
+# Add answer quality 
+ans_quality <- by(data, data$question_title, get_ans_quality)
+data$quality <- unlist(ans_quality)
+data$quality <- as.factor(data$quality)
+# Take away the vector column
+data$ans_seg_vec <- NULL
+
+```
+
+```{r}
+#select data
+data <- subset(data, data$ans_upvote_num != 0)
+selected_data <- data[,c(10,12,21,26:27)]
+#head(selected_data,20)
+```
+
+```{r}
+testset <- take_sample(selected_data)
+#testset
+trainset <- anti_join(selected_data,testset)
+#trainset
+(tuned <- tune.svm(quality~., data = trainset, cost=10^(-1:2), gamma=c(.5,1,2), probability = TRUE))
+```
+
+```{r}
+model <- svm(quality~., data = trainset, cost = 0.1, gamma = 0.5, probability = TRUE)
+prediction <- predict(model, testset[,-5])
+#prediction
+```
+
+```{r}
+data.frame(prediction, testset$quality)
+ConfusionMatrix(prediction, testset$quality)
+```
+
+```{r}
+F1_Score(prediction, testset$quality)
+```
